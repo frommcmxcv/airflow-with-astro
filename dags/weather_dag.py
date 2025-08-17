@@ -1,10 +1,9 @@
 from airflow.sdk.definitions.asset import Asset
 from airflow.decorators import dag, task
+from airflow.providers.postgres.hooks.postgres import PostgresHook
+from psycopg2.extras import execute_batch
 import pendulum
-from pendulum import datetime
 import requests
-import psycopg2
-import psycopg2.extras as extras
 
 
 weather_code_map = {
@@ -20,8 +19,8 @@ url = "https://api.open-meteo.com/v1/forecast?latitude=-6.25&longitude=106.75&ti
 
 
 @dag(
-    start_date=pendulum.datetime(2025, 8, 13, tz="Asia/Jakarta"),
-    schedule="05 23 * * *", # 23:05 WIB == 16:05 UTC
+    start_date=pendulum.datetime(2025, 8, 17, tz="Asia/Jakarta"),
+    schedule="5 23 * * *", # 23:05 WIB == 16:05 UTC
     catchup=False, # Tells Airflow: “don’t go back and fill in missing runs from the past"
     default_args={"owner": "Astro", "retries": 3},
     tags=["weather"],
@@ -63,19 +62,11 @@ def weather_dag():
 
     @task
     def load_tomorrow_weather(rows):
-        target_host = "localhost"
-        target_port = 5432
-        target_username = "postgres"
-        target_password = "postgres"
-        target_db = "practice"
-
-        conn = psycopg2.connect(
-            host = target_host,
-            port = target_port,
-            user = target_username,
-            password = target_password,
-            db = target_db 
-        )
+        if not rows:
+            return "No rows to load"
+        
+        hook = PostgresHook(postgres_conn_id="conn_with_supabase")
+        conn = hook.get_conn()
         cur = conn.cursor()
 
         cur.execute(
@@ -105,7 +96,7 @@ def weather_dag():
             )
             for r in rows
         ]
-        extras.execute_batch(cur, """
+        execute_batch(cur, """
             INSERT INTO weather_forecast (ts, temperature_c, weather_code, weather_desc, precip_mm, windspeed_10m, relative_humidity, cloudcover)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (ts) DO UPDATE SET
@@ -122,6 +113,7 @@ def weather_dag():
         conn.commit()
         cur.close()
         conn.close()
+        return f"Upserted {len(rows)} rows"
 
     @task
     def fetch_today_weather():
@@ -157,19 +149,11 @@ def weather_dag():
 
     @task
     def load_today_weather(rows):
-        target_host = "localhost"
-        target_port = 5432
-        target_username = "postgres"
-        target_password = "postgres"
-        target_db = "practice"
-
-        conn = psycopg2.connect(
-            host = target_host,
-            port = target_port,
-            user = target_username,
-            password = target_password,
-            db = target_db 
-        )
+        if not rows:
+            return "No rows to load"
+        
+        hook = PostgresHook(postgres_conn_id="conn_with_supabase")
+        conn = hook.get_conn()
         cur = conn.cursor()
 
         cur.execute(
@@ -199,7 +183,7 @@ def weather_dag():
             )
             for r in rows
         ]
-        extras.execute_batch(cur, """
+        execute_batch(cur, """
             INSERT INTO weather_observation (ts, temperature_c, weather_code, weather_desc, precip_mm, windspeed_10m, relative_humidity, cloudcover)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (ts) DO UPDATE SET
@@ -216,7 +200,11 @@ def weather_dag():
         conn.commit()
         cur.close()
         conn.close()
+        return f"Upserted {len(rows)} rows"
 
+    # wire the tasks
+    load_tomorrow_weather(fetch_tomorrow_weather())
+    load_today_weather(fetch_today_weather())
 
 # Instantiate the DAG
 weather_dag()
